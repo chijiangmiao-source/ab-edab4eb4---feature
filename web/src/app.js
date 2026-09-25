@@ -82,9 +82,12 @@ function renderState(state) {
     const badge = c.status === "active"
       ? '<span class="badge badge-valid">有效</span>'
       : '<span class="badge badge-invalid">已失效</span>';
+    const auditBtn = c.status === "active"
+      ? `<button class="audit-btn" data-conclusion="${esc(c.id)}">依据容量审计</button>`
+      : "";
     let html = `
       <div class="conclusion-head">
-        <strong><code>${esc(c.id)}</code></strong>${badge}
+        <strong><code>${esc(c.id)}</code></strong>${badge}${auditBtn}
       </div>
       <div class="basis">
         <details ${c.supports.length ? "open" : ""}>
@@ -122,6 +125,9 @@ function renderState(state) {
     }
     html += `</div>`;
     div.innerHTML = html;
+    div.querySelectorAll("button[data-conclusion]").forEach((btn) => {
+      btn.addEventListener("click", () => auditConclusion(btn.dataset.conclusion));
+    });
     box.appendChild(div);
   }
 }
@@ -189,6 +195,56 @@ function showError(msg) {
   showError._t = setTimeout(() => { box.hidden = true; }, 6000);
 }
 
+function renderAudit(a) {
+  const box = $("#audit");
+  const basesHtml = a.bases.map((b) => `
+    <div class="vbox">
+      <h4>依据 <code>${esc(b.id)}</code></h4>
+      <ul class="chain audit-basis">
+        <li>原始事实：${b.facts.map((f) => `<code>${esc(f)}</code>`).join(" ∪ ")}</li>
+        <li>规则链：${b.rule_chain.map((s) =>
+          `<code>${esc(s.rule_id)}</code>（<code>${esc(s.conclusion)}</code> :- ${s.antecedents.map(esc).join(", ")}）`
+        ).join(" → ")}</li>
+      </ul>
+    </div>`).join("");
+  box.className = "verdict";
+  box.innerHTML = `
+    <p>结论 <code>${esc(a.conclusion)}</code> 的独立依据容量审计（同一读取快照，只读）：</p>
+    <p>当前完整复算依据共 <strong>${a.total_bases}</strong> 套；
+      彼此不共享原始事实的最大依据套数（容量）为 <strong>${a.capacity}</strong>。<br/>
+      按稳定规则裁决的一组依据：
+      <strong>${a.basis_ids.map((id) => `<code>${esc(id)}</code>`).join(" ")}</strong></p>
+    <div class="vgrid">${basesHtml}</div>`;
+}
+
+function renderAuditError(id, err) {
+  const box = $("#audit");
+  box.className = "verdict";
+  box.innerHTML = `
+    <p>无法对结论 <code>${esc(id)}</code> 发起依据容量审计：${esc(err.message)}
+      <span class="muted">（${esc(err.code || "error")}）</span><br/>
+      规程与页面已有结论保持不变。</p>`;
+}
+
+function clearAudit() {
+  const box = $("#audit");
+  if (box.classList.contains("muted")) return;
+  box.className = "verdict muted";
+  box.textContent = "规程已变更：之前的审计结果已失效，请重新发起审计（结果只反映最新读取快照）。";
+}
+
+async function auditConclusion(id) {
+  try {
+    const data = await api("/api/audit", {
+      method: "POST",
+      body: JSON.stringify({ conclusion: id }),
+    });
+    renderAudit(data.audit);
+  } catch (e) {
+    renderAuditError(id, e);
+  }
+}
+
 async function refresh() {
   try {
     const state = await api("/api/state");
@@ -207,6 +263,7 @@ async function retract(factId) {
     });
     renderVerdict(data.verdict);
     renderState(data.state);
+    clearAudit();
   } catch (e) {
     showError(`撤回失败: ${e.message}`);
   }
@@ -219,6 +276,7 @@ $("#form-fact").addEventListener("submit", async (e) => {
     await api("/api/facts", { method: "POST", body: JSON.stringify({ id: input.value }) });
     input.value = "";
     await refresh();
+    clearAudit();
   } catch (err) { showError(`添加事实被拒绝: ${err.message}`); }
 });
 
@@ -235,6 +293,7 @@ $("#form-rule").addEventListener("submit", async (e) => {
     });
     f.id.value = f.conclusion.value = f.antecedents.value = "";
     await refresh();
+    clearAudit();
   } catch (err) { showError(`添加规则被拒绝: ${err.message}`); }
 });
 

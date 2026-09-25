@@ -9,6 +9,7 @@ POST /api/facts                {"id": "f1"}                       新建事实
 POST /api/rules                {"id","conclusion","antecedents"}  新建规则
 POST /api/retract              {"fact_id": "f1"}                  撤回事实 (事务传播)
 GET  /api/conclusions/<id>     单个结论的完整依据
+POST /api/audit                {"conclusion": "c"}              独立依据容量审计 (只读)
 """
 
 from __future__ import annotations
@@ -21,20 +22,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+from . import audit as audit_mod
 from . import tms as tms_mod
 from .store import Store
 
 DIST_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "web", "dist")
 
-# 引擎校验错误 -> HTTP 400 + 稳定错误码
+# 引擎/审计校验错误 -> 稳定错误码 + HTTP 状态
 ERROR_CODES = [
+    (audit_mod.UnknownConclusionError, "unknown_conclusion", HTTPStatus.NOT_FOUND),
+    (audit_mod.ConclusionInactiveError, "conclusion_inactive", HTTPStatus.CONFLICT),
+    (audit_mod.AuditLimitExceededError, "audit_limit_exceeded", HTTPStatus.CONFLICT),
     (tms_mod.UnknownFactError, "unknown_fact", HTTPStatus.BAD_REQUEST),
     (tms_mod.DanglingRuleError, "dangling_reference", HTTPStatus.BAD_REQUEST),
     (tms_mod.CyclicRuleError, "cyclic_rule", HTTPStatus.BAD_REQUEST),
     (tms_mod.DuplicateIdError, "duplicate_id", HTTPStatus.BAD_REQUEST),
     (tms_mod.TMSError, "invalid_procedure", HTTPStatus.BAD_REQUEST),
 ]
+
+
+def _read_audit_limit() -> int:
+    """审计上限 (AUDIT_MAX_BASES): 任一节点可枚举的不同完整依据套数。"""
+    raw = os.environ.get("AUDIT_MAX_BASES", "")
+    try:
+        return max(1, int(raw)) if raw else audit_mod.DEFAULT_MAX_BASES
+    except ValueError:
+        return audit_mod.DEFAULT_MAX_BASES
 
 
 class AppState:
@@ -44,6 +58,7 @@ class AppState:
         self.store = Store(db_path)
         self._verdict_lock = threading.Lock()
         self.last_verdict: Optional[dict] = None
+        self.audit_max_bases = _read_audit_limit()
 
     def set_verdict(self, verdict: dict) -> None:
         with self._verdict_lock:
@@ -167,6 +182,11 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     state.set_verdict(payload)
                     self._json({"ok": True, "verdict": payload,
                                 "state": store.snapshot()})
+                elif path == "/api/audit":
+                    # 独立依据容量审计: 同一读取快照上只读求解, 不改动规程
+                    conclusion = str(data.get("conclusion", "")).strip()
+                    report = store.audit_conclusion(conclusion, state.audit_max_bases)
+                    self._json({"ok": True, "audit": report})
                 else:
                     raise _HttpError(HTTPStatus.NOT_FOUND, "not_found", f"未知路径 {path}")
             except _HttpError as e:

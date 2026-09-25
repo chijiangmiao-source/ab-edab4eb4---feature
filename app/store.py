@@ -13,6 +13,7 @@ import sqlite3
 import threading
 from typing import List, Optional
 
+from . import audit as audit_mod
 from . import tms as tms_mod
 from .tms import (
     AffectedConclusion,
@@ -94,9 +95,23 @@ class Store:
         rules = self._conn.execute(
             "SELECT id, conclusion, antecedents FROM rules ORDER BY id"
         ).fetchall()
-        for row in rules:  # 加入时会重算当前支持
-            ants: List[str] = json.loads(row["antecedents"])
-            t.add_rule(row["id"], row["conclusion"], ants)
+        # 按依赖兼容顺序重放: 规则标识的字典序未必与依赖序一致,
+        # 逐条尝试、悬空的留待下轮; 库存规则整体合法, 必然全部插入成功.
+        pending = [(row["id"], row["conclusion"], json.loads(row["antecedents"]))
+                   for row in rules]
+        last_err: Optional[Exception] = None
+        while pending:
+            progressed = False
+            for item in list(pending):
+                try:
+                    t.add_rule(item[0], item[1], item[2])  # 加入时会重算当前支持
+                except tms_mod.DanglingRuleError as exc:
+                    last_err = exc
+                    continue
+                pending.remove(item)
+                progressed = True
+            if not progressed:
+                raise last_err  # 数据损坏: 存在真正悬空的规则
         # 恢复事实撤回状态后重算
         for row in rows:
             if not row["active"]:
@@ -212,6 +227,16 @@ class Store:
         """线程安全地导出引擎完整状态。"""
         with self._lock:
             return self.tms.snapshot()
+
+    def audit_conclusion(self, conclusion_id: str,
+                         max_bases: Optional[int] = None) -> dict:
+        """独立依据容量审计: 在同一读取快照上精确求解 (只读, 不落盘)。
+
+        持有与写操作相同的互斥锁, 因此审计看到的是一致的当前快照;
+        审计本身不做任何写操作, 不改动规程, 也不影响已有裁决.
+        """
+        with self._lock:
+            return audit_mod.run_audit(self.tms, conclusion_id, max_bases)
 
     def node(self, node_id: str):
         with self._lock:

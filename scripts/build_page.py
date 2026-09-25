@@ -36,7 +36,7 @@ def main() -> int:
         if not os.path.isfile(os.path.join(SRC, ref)):
             fail(f"index.html 引用了不存在的资源 {ref}")
     for api_path in ["/api/health", "/api/state", "/api/facts",
-                     "/api/rules", "/api/retract"]:
+                     "/api/rules", "/api/retract", "/api/audit"]:
         if api_path not in js:
             fail(f"app.js 缺少接口调用 {api_path}")
     if not css.strip():

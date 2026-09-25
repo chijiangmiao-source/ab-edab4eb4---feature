@@ -8,6 +8,8 @@ services:
       HOST: "0.0.0.0"
       DB_PATH: /data/procedure.db
       SEED_DEMO: "1"
+      # 独立依据容量审计上限: 任一节点可枚举的不同完整依据套数
+      AUDIT_MAX_BASES: "256"
     ports:
       # 宿主机端口可配置: HOST_PORT=9090 docker compose up web
       - "${HOST_PORT:-8080}:8080"
@@ -23,8 +25,8 @@ services:
       start_period: 3s
     restart: unless-stopped
 
-  # 一次性验证: 运行规则逻辑测试 -> 构建页面 -> API/HTTP 冒烟,
-  # 完成后退出并以退出码报告结果。
+  # 一次性验证: 运行规则逻辑/依据容量审计测试 -> 构建页面 -> API/HTTP 冒烟
+  # (含独立依据容量与失效结论场景), 完成后退出并以退出码报告结果。
   # 用法: docker compose build verify && docker compose up --exit-code-from verify verify
   verify:
     build: .
