@@ -3,6 +3,10 @@
 
 const $ = (sel) => document.querySelector(sel);
 
+// 审计结果与规程快照绑定: 规程变化后旧审计结果立即失效, 只展示新快照的审计
+let stateFingerprint = null;
+let auditFingerprint = null;
+
 async function api(path, options = {}) {
   const resp = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -39,6 +43,11 @@ async function checkHealth() {
 }
 
 function renderState(state) {
+  // 规程一旦变化, 旧的审计结果即失效: 清空审计面板, 再次审计只显示新快照结果
+  const fp = JSON.stringify([state.facts, state.rules, state.conclusions]);
+  if (auditFingerprint !== null && fp !== auditFingerprint) resetAuditPanel();
+  stateFingerprint = fp;
+
   // 事实表
   const fb = $("#facts-table tbody");
   fb.innerHTML = "";
@@ -85,6 +94,8 @@ function renderState(state) {
     let html = `
       <div class="conclusion-head">
         <strong><code>${esc(c.id)}</code></strong>${badge}
+        <button class="audit-btn" data-node="${esc(c.id)}"
+          title="在同一读取快照中精确计算互不相交完整依据的最大套数">容量审计</button>
       </div>
       <div class="basis">
         <details ${c.supports.length ? "open" : ""}>
@@ -124,6 +135,9 @@ function renderState(state) {
     div.innerHTML = html;
     box.appendChild(div);
   }
+  box.querySelectorAll("button.audit-btn").forEach((btn) => {
+    btn.addEventListener("click", () => runAudit(btn.dataset.node));
+  });
 }
 
 function renderVerdict(v) {
@@ -179,6 +193,54 @@ function renderVerdict(v) {
         <ul class="chain survived-list">${survivedHtml}</ul>
       </div>
     </div>`;
+}
+
+function resetAuditPanel() {
+  auditFingerprint = null;
+  const box = $("#audit");
+  box.className = "audit muted";
+  box.textContent = "规程已变化，此前审计结果已失效。请重新发起容量审计，此处只展示最新读取快照的结果。";
+}
+
+function renderAudit(a) {
+  auditFingerprint = stateFingerprint;  // 审计结果绑定当前快照
+  const box = $("#audit");
+  const basesHtml = a.bases.map((b, i) => `
+    <li>
+      第 ${i + 1} 套 <code>${esc(b.id)}</code><br/>
+      原始事实：${b.facts.map((f) => `<code>${esc(f)}</code>`).join(" ∪ ")}<br/>
+      规则链：${b.rules.map((r) => `<code>${esc(r)}</code>`).join(" → ")}
+    </li>`).join("");
+  box.className = "audit";
+  box.innerHTML = `
+    <p>结论 <code>${esc(a.conclusion)}</code> 的独立依据容量：
+      <strong class="capacity">${a.capacity}</strong> 套
+      （当前完整依据共 ${a.total_bases} 套，已按事实集去重；
+       任意两套计入的依据均不共享原始事实，结论标识不计入事实）。</p>
+    <div class="vbox">
+      <h4>按稳定规则裁决出的一组依据（互不相交，结果唯一）</h4>
+      <ul class="chain audit-bases">${basesHtml}</ul>
+    </div>
+    <p class="muted">依据标识序列：${a.basis_ids.map((id) => `<code>${esc(id)}</code>`).join("，")}</p>`;
+}
+
+function renderAuditError(err) {
+  auditFingerprint = stateFingerprint;  // 错误也绑定快照, 规程变化后即失效清除
+  const box = $("#audit");
+  box.className = "audit audit-error";
+  box.textContent = `无法完成容量审计：${err.message}`;
+}
+
+async function runAudit(node) {
+  try {
+    const data = await api("/api/audit", {
+      method: "POST",
+      body: JSON.stringify({ conclusion: node }),
+    });
+    renderAudit(data.audit);
+  } catch (e) {
+    renderAuditError(e);  // 仅在审计面板说明原因, 不改动结论与裁决展示
+  }
 }
 
 function showError(msg) {

@@ -130,4 +130,16 @@ table.data th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .chain code, .affected code, .survived-list code { font-size: 12px; }
 .arrow { color: var(--muted); margin: 0 4px; }
 
+/* 独立依据容量审计 */
+.audit-panel { margin: 0 24px 24px; }
+.audit { font-size: 13px; }
+.audit .capacity { font-size: 18px; color: #0969da; }
+.audit-bases li { border-left-color: #0969da; background: #e8f1fc; }
+.audit-bases code { font-size: 12px; }
+.audit code { background: #f0f2f5; padding: 1px 5px; border-radius: 4px; }
+.audit-error { color: var(--bad); background: var(--bad-bg);
+  border: 1px solid #f5c6c2; border-radius: 6px; padding: 10px 12px; }
+button.audit-btn { background: #6f42c1; padding: 4px 10px; font-size: 12px; }
+button.audit-btn:hover { background: #59359b; }
+
 footer { padding: 12px 24px 24px; color: var(--muted); font-size: 12px; }

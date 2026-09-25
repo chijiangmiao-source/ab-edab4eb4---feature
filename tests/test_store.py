@@ -74,6 +74,21 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(store.ping())
         store.close()
 
+    def test_restart_replays_rules_in_dependency_order_not_id_order(self):
+        # 规则标识字典序与依赖方向相反时, 重启也必须能恢复规程
+        store = Store(self.db)
+        store.add_fact("f1")
+        store.add_rule("rz", "mid", ["f1"])       # rz 先定义 mid
+        store.add_rule("ra", "final", ["mid"])    # ra 字典序在前却依赖 mid
+        store.retract_fact("f1")
+        store.close()
+
+        store2 = Store(self.db)  # 重启: 按依赖拓扑重放, 不应报悬空引用
+        self.assertEqual(store2.tms.nodes["mid"].status, "inactive")
+        self.assertEqual(store2.tms.nodes["final"].status, "inactive")
+        self.assertEqual([r.rule_id for r in store2.tms.list_rules()], ["ra", "rz"])
+        store2.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

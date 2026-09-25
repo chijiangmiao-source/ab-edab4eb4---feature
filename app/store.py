@@ -13,6 +13,7 @@ import sqlite3
 import threading
 from typing import List, Optional
 
+from . import audit as audit_mod
 from . import tms as tms_mod
 from .tms import (
     AffectedConclusion,
@@ -29,8 +30,11 @@ SCHEMA_VERSION = "1"
 class Store:
     """持有一个 TMS 实例并把每次变更原子落盘。"""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, audit_max_bases: int = audit_mod.DEFAULT_MAX_BASES,
+                 audit_max_facts: int = audit_mod.DEFAULT_MAX_FACTS) -> None:
         self.path = path
+        self.audit_max_bases = audit_max_bases
+        self.audit_max_facts = audit_max_facts
         # check_same_thread=False + 互斥锁: 所有写操作串行化
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -94,9 +98,22 @@ class Store:
         rules = self._conn.execute(
             "SELECT id, conclusion, antecedents FROM rules ORDER BY id"
         ).fetchall()
-        for row in rules:  # 加入时会重算当前支持
-            ants: List[str] = json.loads(row["antecedents"])
-            t.add_rule(row["id"], row["conclusion"], ants)
+        # 按依赖顺序重放 (而非标识字典序): 规则前提若引用结论, 该结论的规则
+        # 必须先落库, 否则重启会被误判为悬空引用. 持久化的规则集写入时已通过
+        # 环检测, 必存在拓扑序; 逐轮加入前提当前可解析的规则即可, 结果与
+        # 标识排序无关且最终状态一致 (每次 add_rule 都全量重算不动点)。
+        pending = [(row["id"], row["conclusion"], json.loads(row["antecedents"]))
+                   for row in rules]
+        while pending:
+            progressed = False
+            for rid, concl, ants in list(pending):
+                if all(a in t.nodes for a in ants):
+                    t.add_rule(rid, concl, ants)  # 加入时会重算当前支持
+                    pending.remove((rid, concl, ants))
+                    progressed = True
+            if not progressed:  # 持久层数据损坏 (写入时已校验, 不应发生)
+                raise tms_mod.TMSError(
+                    f"持久化的规则集无法重放: {[p[0] for p in pending]}")
         # 恢复事实撤回状态后重算
         for row in rows:
             if not row["active"]:
@@ -212,6 +229,14 @@ class Store:
         """线程安全地导出引擎完整状态。"""
         with self._lock:
             return self.tms.snapshot()
+
+    def audit_conclusion(self, conclusion: str) -> dict:
+        """独立依据容量审计: 在同一读取快照内只读求解, 不落盘、不改规程。"""
+        with self._lock:
+            return audit_mod.audit_basis_capacity(
+                self.tms, conclusion,
+                max_bases=self.audit_max_bases,
+                max_facts=self.audit_max_facts)
 
     def node(self, node_id: str):
         with self._lock:

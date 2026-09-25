@@ -9,6 +9,7 @@ POST /api/facts                {"id": "f1"}                       新建事实
 POST /api/rules                {"id","conclusion","antecedents"}  新建规则
 POST /api/retract              {"fact_id": "f1"}                  撤回事实 (事务传播)
 GET  /api/conclusions/<id>     单个结论的完整依据
+POST /api/audit                {"conclusion": "c"}  独立依据容量审计 (只读, 不落盘)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+from . import audit as audit_mod
 from . import tms as tms_mod
 from .store import Store
 
@@ -34,6 +36,10 @@ ERROR_CODES = [
     (tms_mod.CyclicRuleError, "cyclic_rule", HTTPStatus.BAD_REQUEST),
     (tms_mod.DuplicateIdError, "duplicate_id", HTTPStatus.BAD_REQUEST),
     (tms_mod.TMSError, "invalid_procedure", HTTPStatus.BAD_REQUEST),
+    # 审计错误: 目标不存在 / 已失效 / 依据规模超上限, 均明确说明原因
+    (audit_mod.UnknownConclusionError, "unknown_conclusion", HTTPStatus.NOT_FOUND),
+    (audit_mod.InactiveConclusionError, "conclusion_inactive", HTTPStatus.BAD_REQUEST),
+    (audit_mod.AuditLimitExceededError, "audit_limit_exceeded", HTTPStatus.BAD_REQUEST),
 ]
 
 
@@ -41,7 +47,13 @@ class AppState:
     """进程级共享状态 (Store 内部已加锁, last_verdict 另加锁)。"""
 
     def __init__(self, db_path: str) -> None:
-        self.store = Store(db_path)
+        self.store = Store(
+            db_path,
+            audit_max_bases=int(os.environ.get("AUDIT_MAX_BASES",
+                                               audit_mod.DEFAULT_MAX_BASES)),
+            audit_max_facts=int(os.environ.get("AUDIT_MAX_FACTS",
+                                               audit_mod.DEFAULT_MAX_FACTS)),
+        )
         self._verdict_lock = threading.Lock()
         self.last_verdict: Optional[dict] = None
 
@@ -167,6 +179,12 @@ def make_handler(state: AppState) -> type[BaseHTTPRequestHandler]:
                     state.set_verdict(payload)
                     self._json({"ok": True, "verdict": payload,
                                 "state": store.snapshot()})
+                elif path == "/api/audit":
+                    # 独立依据容量审计: 同一读取快照内只读求解;
+                    # 不改动规程, 不更新最近裁决, 不覆盖页面已有结论展示
+                    conclusion = str(data.get("conclusion", "")).strip()
+                    result = store.audit_conclusion(conclusion)
+                    self._json({"ok": True, "audit": result})
                 else:
                     raise _HttpError(HTTPStatus.NOT_FOUND, "not_found", f"未知路径 {path}")
             except _HttpError as e:
